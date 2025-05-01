@@ -768,21 +768,31 @@ if __name__ == '__main__':
     logging.info(f"Total rows before split: {len(df_full)}")
 
     # --- Chronological Train/Validation/Test Split --- ## MODIFIED ##
-    logging.info("\n--- Splitting data by date for realistic evaluation ---")
-    last_data_point_dt = df_full['Datetime'].iloc[-1]
-    test_start_date = (last_data_point_dt - pd.offsets.MonthBegin(n=1, normalize=True))
-    logging.info(f"Test set intended to start on: {test_start_date.date()}")
-    val_start_date = (test_start_date - pd.offsets.MonthBegin(n=1, normalize=True))
-    logging.info(f"Validation set intended to start on: {val_start_date.date()}")
-    first_data_point_dt = df_full['Datetime'].iloc[0]
-    if val_start_date <= first_data_point_dt + timedelta(days=30): logging.critical(f"Not enough training data before {val_start_date.date()}."); exit()
-    if test_start_date <= val_start_date: logging.critical(f"Validation start date not before test start date."); exit()
-    logging.info(f"Slicing data: Train < {val_start_date.date()}, Validation < {test_start_date.date()}, Test >= {test_start_date.date()}")
-    df_train = df_full[df_full['Datetime'] < val_start_date].copy()
-    df_val = df_full[(df_full['Datetime'] >= val_start_date) & (df_full['Datetime'] < test_start_date)].copy()
-    df_test = df_full[df_full['Datetime'] >= test_start_date].copy()
-    if df_train.empty or df_val.empty or df_test.empty: logging.critical(f"Splitting resulted in empty sets."); exit()
-    logging.info(f"\nData Split Results (Date-Based):")
+    total_rows = len(df_full)
+    if total_rows < 24 * 90:  # Check if enough data overall
+        logging.critical(f"Not enough total data points ({total_rows}) for split.")
+        exit()
+
+    # Define ratios
+    test_ratio = 0.10  # Use last 10% for testing
+    val_ratio = 0.10  # Use preceding 10% for validation
+
+    # Calculate split indices based on integer location
+    test_split_idx = int(total_rows * (1 - test_ratio))
+    val_split_idx = int(total_rows * (1 - test_ratio - val_ratio))
+
+    # Perform split using iloc
+    df_train = df_full.iloc[:val_split_idx].copy()
+    df_val = df_full.iloc[val_split_idx:test_split_idx].copy()
+    df_test = df_full.iloc[test_split_idx:].copy()
+
+    # Verify splits are not empty
+    if df_train.empty or df_val.empty or df_test.empty:
+        logging.critical(
+            f"Splitting resulted in empty sets using ratios (Total: {total_rows}, Train End: {val_split_idx}, Test Start: {test_split_idx}). Check ratios and data length.")
+        exit()
+
+    logging.info(f"\nData Split Results (Ratio-Based):")
     logging.info(f"Train: {len(df_train)} points ({df_train['Datetime'].min().date()} to {df_train['Datetime'].max().date()})")
     logging.info(f"Val:   {len(df_val)} points ({df_val['Datetime'].min().date()} to {df_val['Datetime'].max().date()})")
     logging.info(f"Test:  {len(df_test)} points ({df_test['Datetime'].min().date()} to {df_test['Datetime'].max().date()})")

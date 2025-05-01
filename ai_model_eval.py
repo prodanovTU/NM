@@ -10,7 +10,6 @@ import tensorflow as tf
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-# TensorFlow / Keras imports
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Concatenate, Input
 from tensorflow.keras.models import Model
@@ -193,12 +192,10 @@ def fetch_entsoe_generation(api_key: str, start_date: datetime, end_date: dateti
     logging.debug("Skipping Generation fetch (Placeholder).")
     return pd.DataFrame({'Datetime': pd.to_datetime([])})
 
-# ========== 1C. FETCH LOAD DATA FROM ENTSO-E (A65 - Placeholder) ==========
 def fetch_entsoe_load(api_key: str, start_date: datetime, end_date: datetime, country_code: str, target_timezone: str) -> pd.DataFrame:
     logging.debug("Skipping Load fetch (Placeholder).")
     return pd.DataFrame({'Datetime': pd.to_datetime([])})
 
-# ========== 1D. FETCH WEATHER DATA FROM OPEN-METEO (HISTORICAL) ==========
 def fetch_openmeteo_data(start_date, end_date, latitude, longitude, timezone):
     base_url = "https://archive-api.open-meteo.com/v1/archive"
     start_str = start_date.strftime('%Y-%m-%d')
@@ -236,8 +233,6 @@ def fetch_openmeteo_data(start_date, end_date, latitude, longitude, timezone):
     except Exception as e: logging.error(f"Error processing Open-Meteo history data: {e}", exc_info=True)
     return pd.DataFrame()
 
-
-# ========== 1E. FETCH WEATHER FORECAST FROM OPEN-METEO (By Date Range) ==========
 def fetch_openmeteo_forecast(latitude, longitude, timezone, start_date_forecast, end_date_forecast):
     base_url = "https://api.open-meteo.com/v1/forecast"
     start_str = start_date_forecast.strftime('%Y-%m-%d')
@@ -268,7 +263,6 @@ def fetch_openmeteo_forecast(latitude, longitude, timezone, start_date_forecast,
     except Exception as e: logging.error(f"Error processing Open-Meteo forecast data: {e}", exc_info=True)
     return pd.DataFrame()
 
-# ========== 2. PREPROCESSING AND FEATURE ENGINEERING ==========
 def preprocess_data(df, scaler=None, fit_scaler=False):
     df_processed = df.copy()
     if 'Datetime' not in df_processed.columns: raise ValueError("'Datetime' column missing.")
@@ -383,11 +377,6 @@ def build_model(input_shape_price, input_shape_features):
     print("\nModel Summary:"); model.summary(print_fn=logging.info)
     return model
 
-# =============================================================================
-# TASK 3: Visualization of results
-# =============================================================================
-
-# ========== 4A. PLOT HISTORICAL EVALUATION RESULTS ==========
 def plot_predictions(true_index, true_values, predicted_values, title='Electricity Price Prediction'):
     if len(true_index) != len(true_values) or len(true_index) != len(predicted_values): return
     plt.figure(figsize=(15, 7)); plt.plot(true_index, true_values, 'b-', label='Actual Price', alpha=0.8, linewidth=1.5)
@@ -399,7 +388,6 @@ def plot_predictions(true_index, true_values, predicted_values, title='Electrici
     except Exception as e: logging.error(f"Could not save historical plot: {e}")
     finally: plt.close()
 
-# ========== 4B. PLOT FUTURE PREDICTION RESULTS ==========
 def plot_future_predictions(df_future, title='Future Electricity Price Prediction'):
     if df_future.empty or 'PredictedPrice' not in df_future.columns or 'Datetime' not in df_future.columns: return
     plt.figure(figsize=(15, 7))

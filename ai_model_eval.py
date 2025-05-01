@@ -3,67 +3,41 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
-import pytz # Make sure pytz is installed: pip install pytz
-import time # For optional delays
-import os # For model caching path
-import tensorflow as tf # For model loading
+import pytz
+import time
+import os
+import tensorflow as tf
 
-# Consider StandardScaler as an alternative if outliers are an issue
-from sklearn.preprocessing import MinMaxScaler #, StandardScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score # Added r2_score
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 # TensorFlow / Keras imports
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Concatenate, Input
 from tensorflow.keras.models import Model
 from tensorflow.keras.callbacks import EarlyStopping
 import matplotlib
-# Try different backends if plotting fails
+
 try:
-    # Using 'Agg' for non-interactive environments first, suitable for servers
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 except ImportError:
     print("Agg backend not available, trying default.")
-    matplotlib.use(None) # Use default backend
+    matplotlib.use(None)
     import matplotlib.pyplot as plt
 
 
-# Disable overly specific TF warnings (optional)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-# Configure logging
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
-
-# =============================================================================
-# TASK 1: Research available free data, which can be extracted via API
-# =============================================================================
-
-# ========== 1A. FETCH ELECTRICITY PRICE DATA FROM ENTSO-E (A44) ==========
 def fetch_entsoe_prices(api_key: str,
                         start_date: datetime,
                         end_date: datetime,
-                        country_code: str, # Now passed explicitly
-                        target_timezone: str # Now passed explicitly
+                        country_code: str,
+                        target_timezone: str
                         ) -> pd.DataFrame:
-    """
-    Fetches, parses, and converts HOURLY (PT60M) Day-Ahead (A44) electricity
-    price data from ENTSO-E API.
 
-    Args:
-        api_key: Your personal ENTSO-E API security token.
-        start_date: The start datetime for the data fetch period.
-        end_date: The end datetime for the data fetch period (exclusive).
-        country_code: The ENTSO-E bidding zone EIC code.
-        target_timezone: The desired local timezone for the output DataFrame.
-
-    Returns:
-        A pandas DataFrame with 'Datetime' and 'Price' columns, or an empty
-        DataFrame if fetching/parsing fails or no HOURLY data is found.
-        'Datetime' column is timezone-naive, representing the local time.
-    """
-    # 1. --- Input Validation ---
     if not api_key or api_key == 'YOUR_ENTSOE_API_KEY':
         logging.error("ENTSO-E API Key is missing or is the placeholder value.")
         raise ValueError("ENTSO-E API Key is missing or is the placeholder value.")
@@ -73,7 +47,6 @@ def fetch_entsoe_prices(api_key: str,
     if end_date <= start_date:
          logging.warning(f"end_date ({end_date}) is not after start_date ({start_date}), request might yield no data.")
 
-    # 2. --- Prepare API Request ---
     start_str = start_date.strftime('%Y%m%d%H%M')
     end_str = end_date.strftime('%Y%m%d%H%M')
     url = (
@@ -84,31 +57,13 @@ def fetch_entsoe_prices(api_key: str,
     logging.info(f"Attempting ENTSO-E fetch: Area='{country_code}', Period='{start_date.date()}':'{end_date.date()}'")
     logging.debug(f"Request URL: {url.replace(api_key, '***')}")
 
-    # Namespace confirmed from successful German response
     ns = {'ts': 'urn:iec62325.351:tc57wg16:451-3:publicationdocument:7:3'}
 
-    # 3. --- Fetch Data ---
     try:
         response = requests.get(url, timeout=60)
         logging.debug(f"API Response Status Code: {response.status_code}")
         response.raise_for_status()
 
-        # --- Optional: Print Raw Response (Uncomment for deep debugging) ---
-        # print("\n-----------------------------------------")
-        # print("--- RAW ENTSO-E API Response Body Start ---")
-        # print("-----------------------------------------")
-        # try:
-        #     print(response.text) # Print decoded text
-        # except Exception as decode_err:
-        #     print(f"(Could not decode response.text: {decode_err}), printing bytes:")
-        #     print(response.content) # Print raw bytes if decoding fails
-        # print("---------------------------------------")
-        # print("--- RAW ENTSO-E API Response Body End ---")
-        # print("---------------------------------------\n")
-        # --- End Optional Print ---
-
-
-        # 4. --- Parse XML Response ---
         root = ET.fromstring(response.content)
         points_data = []
         processed_timeseries = 0
@@ -122,13 +77,11 @@ def fetch_entsoe_prices(api_key: str,
                 continue
 
             resolution_str = period.find('.//ts:resolution', ns).text
-            # --- Filter for Hourly Data ---
             if resolution_str != 'PT60M':
                 logging.debug(f"Skipping TimeSeries: Found resolution {resolution_str}, expecting PT60M.")
                 continue
-            # --- End Filter ---
 
-            found_hourly_timeseries = True # Mark that we are processing an hourly series
+            found_hourly_timeseries = True
             logging.debug(f"Processing TimeSeries with resolution {resolution_str}")
 
             time_interval_node = period.find('.//ts:timeInterval', ns)
@@ -137,9 +90,8 @@ def fetch_entsoe_prices(api_key: str,
                  continue
             start_dt_str = time_interval_node.find('.//ts:start', ns).text
 
-            # Parse start time, ensure it's UTC aware
             try:
-                period_start_dt_utc = pd.to_datetime(start_dt_str) # Handles 'Z' automatically
+                period_start_dt_utc = pd.to_datetime(start_dt_str)
                 if period_start_dt_utc.tzinfo is None:
                     logging.warning(f"Parsed start time '{start_dt_str}' as naive, localizing to UTC.")
                     period_start_dt_utc = period_start_dt_utc.tz_localize('UTC')
@@ -150,9 +102,8 @@ def fetch_entsoe_prices(api_key: str,
                  logging.warning(f"Could not parse period start time '{start_dt_str}'. Skipping Period. Error: {e}")
                  continue
 
-            interval_timedelta = timedelta(hours=1) # We filtered for PT60M
+            interval_timedelta = timedelta(hours=1)
 
-            # Extract price points
             points_in_period = 0
             for point in period.findall('.//ts:Point', ns):
                 try:
@@ -161,19 +112,17 @@ def fetch_entsoe_prices(api_key: str,
                     point_start_time_utc = period_start_dt_utc + (position - 1) * interval_timedelta
                     points_data.append({'Datetime_UTC': point_start_time_utc, 'Price': price})
                     points_in_period += 1
-                except (AttributeError, ValueError, TypeError, ET.ParseError) as e: # Added ParseError
+                except (AttributeError, ValueError, TypeError, ET.ParseError) as e:
                     logging.warning(f"Could not parse Point data (Pos/Price). Skipping point. Error: {e}")
-                    continue # Skip this malformed point
+                    continue
             logging.debug(f"Extracted {points_in_period} points from this Period.")
 
-        # --- Handle Cases Where No Data Was Found ---
         if not found_hourly_timeseries:
-             reason_code = root.find('.//{*}Reason/{*}code') # Wildcard NS search
+             reason_code = root.find('.//{*}Reason/{*}code')
              reason_text = root.find('.//{*}Reason/{*}text')
              if reason_code is not None and reason_text is not None:
                   logging.warning(f"ENTSO-E API Reason Code='{reason_code.text}', Text='{reason_text.text}' (Likely no data matching request).")
              else:
-                  # Check if any TimeSeries were found at all (e.g., only PT15M)
                   if processed_timeseries > 0:
                        logging.warning(f"Found {processed_timeseries} TimeSeries block(s), but none had PT60M (hourly) resolution.")
                   else:
@@ -184,7 +133,6 @@ def fetch_entsoe_prices(api_key: str,
             logging.warning("Hourly TimeSeries/Period blocks found, but failed to extract any valid Price Points.")
             return pd.DataFrame({'Datetime': pd.to_datetime([]), 'Price': []})
 
-        # 5. --- Convert to DataFrame and Process ---
         logging.info(f"Successfully extracted {len(points_data)} raw hourly data points from API response.")
         df_prices = pd.DataFrame(points_data)
         df_prices.rename(columns={'Datetime_UTC': 'Datetime'}, inplace=True)
@@ -203,7 +151,6 @@ def fetch_entsoe_prices(api_key: str,
         df_prices.drop_duplicates(subset=['Datetime'], keep='first', inplace=True)
         df_prices.set_index('Datetime', inplace=True)
 
-        # Optional Reindexing/Interpolation
         if not df_prices.empty:
              try:
                  logging.debug("Attempting reindexing to ensure complete hourly frequency.")
@@ -217,15 +164,14 @@ def fetch_entsoe_prices(api_key: str,
              except Exception as e:
                   logging.warning(f"Could not reindex/interpolate data. Error: {e}. Returning potentially gappy data.")
 
-        df_prices = df_prices.reset_index()  # Moves old index ('Datetime') to column 'index'
-        df_prices.rename(columns={'index': 'Datetime'}, inplace=True)  # Rename the 'index' column to 'Datetime'
+        df_prices = df_prices.reset_index()
+        df_prices.rename(columns={'index': 'Datetime'}, inplace=True)
         if df_prices.empty:
              logging.warning("No price points remaining after processing.")
         else:
              logging.info(f"Finished processing. Returning DataFrame with {len(df_prices)} rows.")
         return df_prices
 
-    # 6. --- Exception Handling ---
     except requests.exceptions.Timeout:
         logging.error(f"ENTSO-E API request timed out for URL: {url.replace(api_key, '***')}")
         return pd.DataFrame({'Datetime': pd.to_datetime([]), 'Price': []})
@@ -242,7 +188,7 @@ def fetch_entsoe_prices(api_key: str,
     except Exception as e:
         logging.error(f"An unexpected error occurred in fetch_entsoe_prices: {e}", exc_info=True)
         return pd.DataFrame({'Datetime': pd.to_datetime([]), 'Price': []})
-# ========== 1B. FETCH GENERATION DATA FROM ENTSO-E (A75 - Placeholder) ==========
+
 def fetch_entsoe_generation(api_key: str, start_date: datetime, end_date: datetime, country_code: str, target_timezone: str) -> pd.DataFrame:
     logging.debug("Skipping Generation fetch (Placeholder).")
     return pd.DataFrame({'Datetime': pd.to_datetime([])})
@@ -331,13 +277,11 @@ def preprocess_data(df, scaler=None, fit_scaler=False):
     df_processed.sort_index(inplace=True)
     logging.info(f"Preprocessing data from {df_processed.index.min()} to {df_processed.index.max()}")
 
-    # Feature Engineering
     df_processed['Hour'] = df_processed.index.hour
     df_processed['DayOfWeek'] = df_processed.index.dayofweek
     df_processed['Month'] = df_processed.index.month
     df_processed['IsWeekend'] = df_processed['DayOfWeek'].isin([5, 6]).astype(int)
 
-    # Define potential columns dynamically
     price_col_original = 'Price'; scaled_price_col_name = 'ScaledPrice'
     base_feature_cols = ['Hour', 'DayOfWeek', 'Month', 'IsWeekend']
     weather_cols = ['Temperature', 'Humidity', 'Wind Speed', 'Cloudiness']
@@ -364,14 +308,12 @@ def preprocess_data(df, scaler=None, fit_scaler=False):
 
     if not columns_to_scale: return df_processed, scaler, [], scaled_price_col_name, feature_cols
 
-    # Handle Missing Values
     nan_counts = df_processed[columns_to_scale].isnull().sum()
     if nan_counts.sum() > 0:
          logging.warning(f"NaNs detected before scaling:\n{nan_counts[nan_counts > 0]}")
          logging.info("Filling NaNs using ffill/bfill/0.")
          df_processed.fillna(method='ffill', inplace=True); df_processed.fillna(method='bfill', inplace=True); df_processed.fillna(0, inplace=True)
 
-    # Scaling
     if not price_col_current: return df_processed, scaler, [], None, feature_cols
     try:
         if fit_scaler:
@@ -391,9 +333,7 @@ def preprocess_data(df, scaler=None, fit_scaler=False):
     logging.info("Preprocessing finished.")
     return df_processed, scaler, columns_to_scale, scaled_price_col_name, scaled_feature_cols
 
-# ========== Function to Create Sequences ==========
 def create_sequences(data, price_col_name, feature_col_names, seq_length):
-    """ Creates sequences for LSTM input (price + features) and target (price). """
     X_price_list, X_features_list, y_list = [], [], []
     if price_col_name not in data.columns: raise ValueError(f"Price column '{price_col_name}' not found.")
     present_feature_cols = [col for col in feature_col_names if col in data.columns]
@@ -413,13 +353,7 @@ def create_sequences(data, price_col_name, feature_col_names, seq_length):
     logging.info(f"Sequence shapes: X_price={X_price.shape}, X_features={X_features.shape if use_features else 'None'}, y={y.shape}")
     return X_price, X_features, y
 
-# =============================================================================
-# TASK 2: Develop model(s) for price forecasting using Neural Networks
-# =============================================================================
-
-# ========== 3. BUILD LSTM MODEL ==========
 def build_model(input_shape_price, input_shape_features):
-    """ Builds the multi-input LSTM model, adapting to feature presence. """
     input_price = Input(shape=input_shape_price, name='price_input')
     lstm_price_1 = LSTM(units=64, return_sequences=True, name='lstm_price_1')(input_price)
     dropout_price_1 = Dropout(0.2, name='dropout_price_1')(lstm_price_1)
@@ -477,13 +411,8 @@ def plot_future_predictions(df_future, title='Future Electricity Price Predictio
     except Exception as e: logging.error(f"Could not save future plot: {e}")
     finally: plt.close()
 
-# =============================================================================
-# TASK 4: Evaluate accuracy / Calculate error (Refactored Functions)
-# =============================================================================
 
-# ========== 5A. TRAIN MODEL ========== ## REFACTORED ##
 def train_model(model, X_train_price, X_train_features, y_train, X_val_price, X_val_features, y_val, epochs=100, batch_size=32):
-    """ Trains the LSTM model with early stopping. """
     train_inputs = [X_train_price]
     val_inputs = [X_val_price]
     features_exist = X_train_features is not None and X_train_features.ndim == 3 and X_train_features.shape[2] > 0
@@ -498,12 +427,10 @@ def train_model(model, X_train_price, X_train_features, y_train, X_val_price, X_
     logging.info(f"--- Model Training Finished (Epochs: {len(history.history['loss'])}) ---")
     return model
 
-# ========== 5B. EVALUATE MODEL ========== ## REFACTORED ##
 def evaluate_model(model, scaler,
                    X_test_price, X_test_features, y_test_scaled,
                    test_data_index, scaled_columns_list,
                    accuracy_tolerance_eur=15.0):
-    """ Evaluates the trained model using MAE, RMSE, R2, Acc w/ Tolerance. """
     test_inputs = [X_test_price]
     features_exist = X_test_features is not None and X_test_features.ndim == 3 and X_test_features.shape[2] > 0
     if features_exist:
@@ -515,7 +442,6 @@ def evaluate_model(model, scaler,
     try: predictions_scaled = model.predict(test_inputs)
     except Exception as e: logging.error(f"Model prediction failed during evaluation: {e}", exc_info=True); return None, None, None, None
 
-    # Inverse Scaling
     if scaler is None or not scaled_columns_list: return None, None, None, None
     price_col_name_scaled = 'ScaledPrice'
     try: price_col_index = scaled_columns_list.index(price_col_name_scaled)
@@ -523,14 +449,13 @@ def evaluate_model(model, scaler,
     num_scaled_features = len(scaled_columns_list)
     if num_scaled_features != scaler.n_features_in_: logging.error(f"Scaler mismatch"); return None, None, None, None
 
-    try: # Rescale
+    try:
         dummy_predictions = np.zeros((len(predictions_scaled), num_scaled_features)); dummy_predictions[:, price_col_index] = predictions_scaled.flatten()
         predictions_rescaled = scaler.inverse_transform(dummy_predictions)[:, price_col_index]
         dummy_y_test = np.zeros((len(y_test_scaled), num_scaled_features)); dummy_y_test[:, price_col_index] = y_test_scaled.flatten()
         y_test_rescaled = scaler.inverse_transform(dummy_y_test)[:, price_col_index]
     except Exception as e: logging.error(f"Inverse scaling failed during evaluation: {e}", exc_info=True); return None, None, None, None
 
-    # Calculate Metrics
     logging.info("\n--- Test Set Evaluation Metrics ---")
     mae = mean_absolute_error(y_test_rescaled, predictions_rescaled); logging.info(f"Average Price Delta (MAE):  {mae:.3f} (EUR/MWh)")
     rmse = np.sqrt(mean_squared_error(y_test_rescaled, predictions_rescaled)); logging.info(f"RMSE:                       {rmse:.3f} (EUR/MWh)")
@@ -540,13 +465,11 @@ def evaluate_model(model, scaler,
     accuracy_within_tolerance = (within_tolerance_count / len(y_test_rescaled)) * 100 if len(y_test_rescaled) > 0 else 0
     logging.info(f"Accuracy (within +/- {accuracy_tolerance_eur:.1f} EUR): {accuracy_within_tolerance:.2f}%")
 
-    # Plotting (Task 3 for evaluation)
     if len(test_data_index) == len(y_test_rescaled): plot_predictions(test_data_index, y_test_rescaled, predictions_rescaled, title='Historical Price Prediction')
     else: logging.warning(f"Length mismatch plotting test data.")
 
     return rmse, mae, r2, accuracy_within_tolerance
 
-# ========== 5C. MAKE FUTURE PREDICTIONS ==========
 def predict_future_prices(model,
                           scaler,
                           last_known_sequence_scaled_df,
@@ -556,26 +479,21 @@ def predict_future_prices(model,
                           price_col_name_scaled,
                           all_feature_cols,
                           scaled_cols_list):
-    """ Predicts future prices iteratively using weather forecasts. """
     logging.info(f"Starting future prediction for {n_future_hours} hours...")
-    # Input Validation
     if not isinstance(last_known_sequence_scaled_df, pd.DataFrame) or len(last_known_sequence_scaled_df) != sequence_length: return pd.DataFrame()
     if price_col_name_scaled not in last_known_sequence_scaled_df.columns: return pd.DataFrame()
     if scaler is None or not scaled_cols_list: return pd.DataFrame()
 
-    # Prepare Weather Forecast
     weather_forecast_df = weather_forecast_df.copy()
     weather_forecast_df['Datetime'] = pd.to_datetime(weather_forecast_df['Datetime'])
     weather_forecast_df.set_index('Datetime', inplace=True)
 
-    # Generate Future Timestamps and Time Features
     last_historical_dt = last_known_sequence_scaled_df.index[-1]
     future_datetimes = pd.date_range(start=last_historical_dt + timedelta(hours=1), periods=n_future_hours, freq='h')
     future_df = pd.DataFrame(index=future_datetimes)
     future_df['Hour'] = future_df.index.hour; future_df['DayOfWeek'] = future_df.index.dayofweek
     future_df['Month'] = future_df.index.month; future_df['IsWeekend'] = future_df['DayOfWeek'].isin([5, 6]).astype(int)
 
-    # Merge and Scale Future Features
     weather_cols_needed = [col for col in ['Temperature', 'Humidity', 'Wind Speed', 'Cloudiness'] if col in all_feature_cols]
     present_feature_cols = weather_cols_needed + [col for col in ['Hour','DayOfWeek','Month','IsWeekend'] if col in all_feature_cols]
     future_df = future_df.merge(weather_forecast_df[weather_cols_needed], left_index=True, right_index=True, how='left')
@@ -593,7 +511,6 @@ def predict_future_prices(model,
         scaled_future_features_df = scaled_future_features_df[present_feature_cols]
     except Exception as e: logging.error(f"Error scaling future features: {e}.", exc_info=True); return pd.DataFrame()
 
-    # Iterative Prediction Loop
     initial_sequence_cols = [price_col_name_scaled] + present_feature_cols
     if not all(col in last_known_sequence_scaled_df.columns for col in initial_sequence_cols):
          logging.error(f"Mismatch: required cols {initial_sequence_cols} vs history {last_known_sequence_scaled_df.columns}")
@@ -627,7 +544,6 @@ def predict_future_prices(model,
 
         current_sequence_scaled_array = np.vstack([current_sequence_scaled_array[1:], new_row_scaled])
 
-    # Inverse Transform Predictions
     if not future_predictions_scaled: return pd.DataFrame()
     future_predictions_scaled = np.array(future_predictions_scaled).reshape(-1, 1)
     try:
@@ -642,38 +558,22 @@ def predict_future_prices(model,
     logging.info(f"Finished future prediction. Generated {len(df_future_predictions)} predictions.")
     return df_future_predictions
 
-
-# ========== 6. MAIN EXECUTION ==========
-# ========== 6. MAIN EXECUTION ==========
 if __name__ == '__main__':
-    # --- Configuration ---
     API_KEY_ENTSOE = 'a5298d45-1477-4ecf-8335-dd4d99fa969f'
     MODEL_CACHE_DIR = "saved_models"
     os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-    LOAD_CACHED_MODEL = True # Set True to load if exists, False to force retrain
+    LOAD_CACHED_MODEL = True
 
-    # --- TARGET CONFIGURATION ---
-    # Option 1: Bulgaria
-    # TARGET_COUNTRY_CODE = '10Y10YBG-CEEG-0C'
-    # TARGET_COUNTRY_TZ = 'Europe/Sofia'
-    # TARGET_WEATHER_LAT = 42.6977
-    # TARGET_WEATHER_LON = 23.3219
-
-    # Option 2: Germany
-    TARGET_COUNTRY_CODE = '10YCA-BULGARIA-R'    # Germany-Luxembourg Bidding Zone EIC
-    TARGET_COUNTRY_TZ = 'Europe/Sofia'         # Germany Timezone
-    TARGET_WEATHER_LAT = 42.6977  # Sofia Latitude (approx.)
-    TARGET_WEATHER_LON = 23.3219  # Sofia Longitude (approx.)
-    # --- END TARGET ---
+    TARGET_COUNTRY_CODE = '10YCA-BULGARIA-R'
+    TARGET_COUNTRY_TZ = 'Europe/Sofia'
+    TARGET_WEATHER_LAT = 42.6977
+    TARGET_WEATHER_LON = 23.3219
 
     if API_KEY_ENTSOE == 'YOUR_ENTSOE_API_KEY' or not API_KEY_ENTSOE: exit()
 
-    # --- Define Date Range & Fetch --- ### MODIFIED SECTION ###
-    # Define overall range using UTC
-    end_date_fetch_utc = datetime.now(pytz.utc).replace(hour=0, minute=0, second=0, microsecond=0) # Start of today in UTC
-    start_date_fetch_utc = end_date_fetch_utc - timedelta(days=735) # Fetch ~2 years back from today (UTC based)
+    end_date_fetch_utc = datetime.now(pytz.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    start_date_fetch_utc = end_date_fetch_utc - timedelta(days=735)
 
-    # Log the approximate local range for user understanding
     start_date_fetch_local_approx = start_date_fetch_utc.astimezone(pytz.timezone(TARGET_COUNTRY_TZ))
     end_date_fetch_local_approx = end_date_fetch_utc.astimezone(pytz.timezone(TARGET_COUNTRY_TZ))
     logging.info(f"--- Fetching historical data from approx {start_date_fetch_local_approx.date()} to {end_date_fetch_local_approx.date()} ({TARGET_COUNTRY_TZ}) ---")
@@ -683,51 +583,29 @@ if __name__ == '__main__':
     all_generation_chunks = []
     all_load_chunks = []
 
-    # Generate chunk start dates in UTC directly
     chunk_start_dates_utc = pd.date_range(start=start_date_fetch_utc, end=end_date_fetch_utc, freq='MS', tz='UTC')
-    # Ensure the very first fetch date is included if it wasn't a month start
     if start_date_fetch_utc < chunk_start_dates_utc[0]:
          chunk_start_dates_utc = chunk_start_dates_utc.insert(0, start_date_fetch_utc)
 
-    # --- Start Fetching Loop ---
     for i, chunk_start_utc in enumerate(chunk_start_dates_utc):
-        # Determine UTC end date for the chunk
         chunk_end_utc = chunk_start_dates_utc[i+1] if i + 1 < len(chunk_start_dates_utc) else end_date_fetch_utc
         if chunk_end_utc <= chunk_start_utc: continue
 
-        # Convert chunk boundaries to local naive time JUST for Open-Meteo history call and logging
         chunk_start_local_naive = chunk_start_utc.astimezone(pytz.timezone(TARGET_COUNTRY_TZ)).replace(tzinfo=None)
         chunk_end_local_naive = chunk_end_utc.astimezone(pytz.timezone(TARGET_COUNTRY_TZ)).replace(tzinfo=None)
 
         logging.info(f"\nFetching Chunk {i+1}/{len(chunk_start_dates_utc)}: Local {chunk_start_local_naive.date()} to {chunk_end_local_naive.date()} for {TARGET_COUNTRY_CODE}")
 
-        # Fetch Prices (Pass UTC aware datetimes)
         df_price_chunk = fetch_entsoe_prices(API_KEY_ENTSOE, chunk_start_utc, chunk_end_utc, TARGET_COUNTRY_CODE, TARGET_COUNTRY_TZ)
         if not df_price_chunk.empty:
-            # Print full chunk if needed (uncomment below)
-            # print(f"\n--- Price Chunk {i+1} Data ---\n{df_price_chunk.to_string()}\n--- End Chunk ---")
             all_price_chunks.append(df_price_chunk)
         else: logging.warning(f"No price data returned for chunk.")
-        time.sleep(0.1) # Be polite to API
+        time.sleep(0.1)
 
-        # Fetch Historical Weather (Pass local naive datetimes)
         df_weather_chunk = fetch_openmeteo_data(chunk_start_local_naive, chunk_end_local_naive, TARGET_WEATHER_LAT, TARGET_WEATHER_LON, TARGET_COUNTRY_TZ)
         if not df_weather_chunk.empty: all_weather_chunks.append(df_weather_chunk)
         else: logging.warning(f"No historical weather data returned for chunk.")
         time.sleep(0.1)
-
-        # Fetch Generation (Placeholder - ENTSO-E needs UTC aware)
-        # df_gen_chunk = fetch_entsoe_generation(API_KEY_ENTSOE, chunk_start_utc, chunk_end_utc, TARGET_COUNTRY_CODE, TARGET_COUNTRY_TZ)
-        # if not df_gen_chunk.empty: all_generation_chunks.append(df_gen_chunk)
-        # time.sleep(0.1)
-
-        # Fetch Load (Placeholder - ENTSO-E needs UTC aware)
-        # df_load_chunk = fetch_entsoe_load(API_KEY_ENTSOE, chunk_start_utc, chunk_end_utc, TARGET_COUNTRY_CODE, TARGET_COUNTRY_TZ)
-        # if not df_load_chunk.empty: all_load_chunks.append(df_load_chunk)
-        # time.sleep(0.1)
-
-    # --- Combine and Merge Fetched Data ---
-    # ... (rest of the script remains the same) ...
 
         df_gen_chunk = fetch_entsoe_generation(API_KEY_ENTSOE, chunk_start_utc, chunk_end_utc, TARGET_COUNTRY_CODE, TARGET_COUNTRY_TZ)
         if not df_gen_chunk.empty: all_generation_chunks.append(df_gen_chunk)
@@ -737,7 +615,6 @@ if __name__ == '__main__':
         if not df_load_chunk.empty: all_load_chunks.append(df_load_chunk)
         time.sleep(0.1)
 
-    # --- Combine and Merge Fetched Data ---
     if not all_price_chunks: logging.critical("FATAL: No price data fetched."); exit()
     df_prices_full = pd.concat(all_price_chunks, ignore_index=True).drop_duplicates('Datetime').sort_values('Datetime')
     df_full = df_prices_full; logging.info(f"Combined {len(df_full)} price points.")
@@ -752,10 +629,10 @@ if __name__ == '__main__':
              data_types_present.append('Weather'); weather_data_fetched = True
              logging.info(f"Merged Weather. Total rows after merge: {len(df_full)}")
     if not weather_data_fetched: logging.warning("No weather data merged.")
-    if all_generation_chunks: # Placeholder logic
+    if all_generation_chunks:
         df_gen_full = pd.concat(all_generation_chunks,ignore_index=True).drop_duplicates('Datetime').sort_values('Datetime')
         if not df_gen_full.empty: df_full=pd.merge(df_full,df_gen_full,on='Datetime',how='left'); data_types_present.append('Gen')
-    if all_load_chunks: # Placeholder logic
+    if all_load_chunks:
         df_load_full = pd.concat(all_load_chunks,ignore_index=True).drop_duplicates('Datetime').sort_values('Datetime')
         if not df_load_full.empty: df_full=pd.merge(df_full,df_load_full,on='Datetime',how='left'); data_types_present.append('Load')
 
@@ -767,26 +644,21 @@ if __name__ == '__main__':
     logging.info(f"Final Data range: {df_full['Datetime'].min()} to {df_full['Datetime'].max()}")
     logging.info(f"Total rows before split: {len(df_full)}")
 
-    # --- Chronological Train/Validation/Test Split --- ## MODIFIED ##
     total_rows = len(df_full)
-    if total_rows < 24 * 90:  # Check if enough data overall
+    if total_rows < 24 * 90:
         logging.critical(f"Not enough total data points ({total_rows}) for split.")
         exit()
 
-    # Define ratios
-    test_ratio = 0.10  # Use last 10% for testing
-    val_ratio = 0.10  # Use preceding 10% for validation
+    test_ratio = 0.10
+    val_ratio = 0.10
 
-    # Calculate split indices based on integer location
     test_split_idx = int(total_rows * (1 - test_ratio))
     val_split_idx = int(total_rows * (1 - test_ratio - val_ratio))
 
-    # Perform split using iloc
     df_train = df_full.iloc[:val_split_idx].copy()
     df_val = df_full.iloc[val_split_idx:test_split_idx].copy()
     df_test = df_full.iloc[test_split_idx:].copy()
 
-    # Verify splits are not empty
     if df_train.empty or df_val.empty or df_test.empty:
         logging.critical(
             f"Splitting resulted in empty sets using ratios (Total: {total_rows}, Train End: {val_split_idx}, Test Start: {test_split_idx}). Check ratios and data length.")
@@ -796,9 +668,7 @@ if __name__ == '__main__':
     logging.info(f"Train: {len(df_train)} points ({df_train['Datetime'].min().date()} to {df_train['Datetime'].max().date()})")
     logging.info(f"Val:   {len(df_val)} points ({df_val['Datetime'].min().date()} to {df_val['Datetime'].max().date()})")
     logging.info(f"Test:  {len(df_test)} points ({df_test['Datetime'].min().date()} to {df_test['Datetime'].max().date()})")
-    # --- End Date-Based Split ---
 
-    # --- Preprocess Data ---
     logging.info("\n--- Preprocessing Train Data (Fitting Scaler) ---")
     df_train_processed, scaler, scaled_cols_list, scaled_price_col_name, feature_cols_list = preprocess_data(df_train, fit_scaler=True)
     if scaler is None or scaled_price_col_name is None: logging.critical("Preprocessing failed."); exit()
@@ -807,8 +677,7 @@ if __name__ == '__main__':
     logging.info("\n--- Preprocessing Test Data (Transforming Only) ---")
     df_test_processed, _, _, _, _ = preprocess_data(df_test, scaler=scaler, fit_scaler=False)
 
-    # --- Create Sequences ---
-    sequence_length = 24 * 3 # Shortened sequence length
+    sequence_length = 24 * 3
     logging.info(f"\n--- Creating Sequences (Length={sequence_length}) ---")
     X_train_price, X_train_features, y_train = create_sequences(df_train_processed, scaled_price_col_name, feature_cols_list, sequence_length)
     X_val_price, X_val_features, y_val = create_sequences(df_val_processed, scaled_price_col_name, feature_cols_list, sequence_length)
@@ -816,7 +685,6 @@ if __name__ == '__main__':
     if y_train.size == 0 or y_val.size == 0 or y_test_scaled.size == 0: logging.critical("Sequence creation failed."); exit()
     test_data_index = df_test_processed.index[sequence_length:] if len(df_test_processed) > sequence_length else pd.Index([])
 
-    # --- Build or Load Model --- ## NEW CACHING LOGIC ##
     model = None
     model_loaded_from_cache = False
     model_filename = f"lstm_model_{TARGET_COUNTRY_CODE}_seq{sequence_length}.keras"
@@ -841,23 +709,21 @@ if __name__ == '__main__':
         feature_input_shape = (sequence_length, X_train_features.shape[2]) if X_train_features is not None and X_train_features.ndim == 3 and X_train_features.shape[2] > 0 else None
         model = build_model(price_input_shape, feature_input_shape)
 
-    # --- Train Model (if not loaded from cache) --- ## MODIFIED ##
     if not model_loaded_from_cache:
         if model is None: logging.critical("Model is None, cannot train."); exit()
         model = train_model(
             model,
             X_train_price, X_train_features, y_train,
             X_val_price, X_val_features, y_val,
-            epochs=100, batch_size=64 # Example training params
+            epochs=100, batch_size=64
         )
-        try: # Save the newly trained model
+        try:
             model.save(model_path)
             logging.info(f"Trained model saved to: {model_path}")
         except Exception as e: logging.error(f"Failed to save trained model: {e}")
     else:
          logging.info("Skipping training as model was loaded from cache.")
 
-    # --- Evaluate Model --- ## MODIFIED ##
     logging.info("\n--- Evaluating Final Model ---")
     if model is None: logging.critical("Model is None, cannot evaluate."); exit()
     rmse_test, mae_test, r2_test, acc_within_tol_test = evaluate_model(
@@ -866,10 +732,7 @@ if __name__ == '__main__':
         test_data_index, scaled_cols_list
     )
 
-    # =============================================================================
-    # === FUTURE PREDICTION SECTION ===
-    # =============================================================================
-    if model is not None: # Proceed only if model exists (loaded or trained)
+    if model is not None:
         logging.info("\n--- Starting Future Prediction Workflow ---")
         N_FUTURE_HOURS = 24
 
@@ -901,7 +764,7 @@ if __name__ == '__main__':
 
                 if len(df_weather_forecast_filtered) == N_FUTURE_HOURS:
                      logging.info(f"Successfully filtered weather forecast to {len(df_weather_forecast_filtered)} hours for prediction.")
-                     present_feature_cols = feature_cols_list # Use features from preprocessing
+                     present_feature_cols = feature_cols_list
 
                      df_future = predict_future_prices(
                          model=model,
@@ -925,9 +788,8 @@ if __name__ == '__main__':
         else: logging.error(f"Not enough processed test data ({len(df_test_processed)}) for sequence length ({sequence_length}).")
     else: logging.error("No model available for future prediction.")
 
-    # --- Final Log Output ---
     logging.info("\n--- Final Test Set Evaluation Results ---")
-    if mae_test is not None: # Check if MAE was calculated (i.e., evaluation ran)
+    if mae_test is not None:
         logging.info(f"Final Test RMSE: {rmse_test:.3f} EUR/MWh")
         logging.info(f"Final Test MAE (Avg Price Delta): {mae_test:.3f} EUR/MWh")
         logging.info(f"Final Test R-squared (R²): {r2_test:.3f}")

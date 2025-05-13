@@ -1,3 +1,69 @@
+"""
+Electricity Price Forecasting Software
+
+Overview:
+This software is designed to fetch, preprocess, and forecast electricity prices using historical data from the ENTSO-E
+API and weather data from Open-Meteo. It employs a Long Short-Term Memory (LSTM) neural network to predict future
+electricity prices based on historical price trends and correlated features such as weather conditions, time-based
+features, and potentially generation/load data. The software supports data retrieval, preprocessing, model training,
+evaluation, and future price prediction for a specified region.
+
+Key Components:
+1. **Data Fetching**:
+   - `fetch_entsoe_prices`: Retrieves hourly electricity price data from the ENTSO-E Transparency Platform.
+   - `fetch_openmeteo_data` and `fetch_openmeteo_forecast`: Fetch historical and forecasted weather data from Open-Meteo.
+   - Placeholder functions (`fetch_entsoe_generation`, `fetch_entsoe_load`) for potential future integration of generation
+     and load data.
+
+2. **Data Preprocessing**:
+   - `preprocess_data`: Normalizes data using MinMaxScaler, adds time-based features (hour, day of week, etc.), and handles
+     missing values.
+   - `create_sequences`: Prepares data for LSTM by creating time-series sequences of specified length.
+
+3. **Model Building and Training**:
+   - `build_model`: Constructs a dual-branch LSTM model that processes price sequences and additional features (e.g., weather).
+   - `train_model`: Trains the model with early stopping to prevent overfitting.
+   - `evaluate_model`: Assesses model performance using RMSE, MAE, R², and accuracy within a tolerance threshold.
+
+4. **Prediction and Visualization**:
+   - `predict_future_prices`: Generates future price predictions using the trained model and forecasted weather data.
+   - `plot_predictions` and `plot_future_predictions`: Visualize historical and forecasted price predictions.
+
+Usage:
+The script is executed as a standalone program (`if __name__ == '__main__':`) and performs the following workflow:
+- Fetches historical price and weather data for a specified region (e.g., Bulgaria).
+- Splits data into training, validation, and test sets.
+- Preprocesses and sequences data for LSTM input.
+- Trains or loads a cached LSTM model.
+- Evaluates the model on the test set and generates future price predictions for the next 24 hours.
+- Saves plots of historical and future predictions.
+
+Configuration:
+- API key for ENTSO-E is required (`API_KEY_ENTSOE`).
+- Region-specific parameters (country code, timezone, latitude, longitude) are set for data fetching.
+- Model parameters (sequence length, epochs, batch size) can be adjusted for experimentation.
+
+Output:
+- Logs detailed execution steps and metrics.
+- Saves trained model and prediction plots.
+- Prints future price predictions for the specified forecast period.
+
+Dependencies:
+- Python libraries: requests, pandas, numpy, tensorflow, sklearn, matplotlib, xml.etree.ElementTree, pytz.
+- External APIs: ENTSO-E Transparency Platform, Open-Meteo.
+
+Limitations:
+- Requires a valid ENTSO-E API key.
+- Generation and load data fetching are placeholders and not implemented.
+- Weather forecast data is limited to Open-Meteo’s capabilities.
+- Model performance depends on data quality and feature availability.
+
+Future Enhancements:
+- Implement generation and load data fetching.
+- Add support for multiple regions or cross-regional predictions.
+- Incorporate additional features (e.g., economic indicators, demand forecasts).
+- Optimize model architecture for better accuracy or faster training.
+"""
 import requests
 import pandas as pd
 import numpy as np
@@ -7,7 +73,6 @@ import pytz
 import time
 import os
 import tensorflow as tf
-
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from tensorflow.keras.models import Sequential
@@ -24,7 +89,6 @@ except ImportError:
     matplotlib.use(None)
     import matplotlib.pyplot as plt
 
-
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,7 +100,10 @@ def fetch_entsoe_prices(api_key: str,
                         country_code: str,
                         target_timezone: str
                         ) -> pd.DataFrame:
-
+    """
+    Fetches hourly electricity price data from the ENTSO-E Transparency Platform for a specified region and time period.
+    Converts timestamps to the target timezone and ensures a complete hourly time series through interpolation.
+    """
     if not api_key or api_key == 'YOUR_ENTSOE_API_KEY':
         logging.error("ENTSO-E API Key is missing or is the placeholder value.")
         raise ValueError("ENTSO-E API Key is missing or is the placeholder value.")
@@ -189,14 +256,26 @@ def fetch_entsoe_prices(api_key: str,
         return pd.DataFrame({'Datetime': pd.to_datetime([]), 'Price': []})
 
 def fetch_entsoe_generation(api_key: str, start_date: datetime, end_date: datetime, country_code: str, target_timezone: str) -> pd.DataFrame:
+    """
+    Placeholder function for fetching electricity generation data from ENTSO-E.
+    Currently returns an empty DataFrame as implementation is not provided.
+    """
     logging.debug("Skipping Generation fetch (Placeholder).")
     return pd.DataFrame({'Datetime': pd.to_datetime([])})
 
 def fetch_entsoe_load(api_key: str, start_date: datetime, end_date: datetime, country_code: str, target_timezone: str) -> pd.DataFrame:
+    """
+    Placeholder function for fetching electricity load data from ENTSO-E.
+    Currently returns an empty DataFrame as implementation is not provided.
+    """
     logging.debug("Skipping Load fetch (Placeholder).")
     return pd.DataFrame({'Datetime': pd.to_datetime([])})
 
 def fetch_openmeteo_data(start_date, end_date, latitude, longitude, timezone):
+    """
+    Fetches historical weather data (temperature, humidity, wind speed, cloudiness) from Open-Meteo for the specified
+    coordinates and time period. Ensures data aligns with the requested timezone.
+    """
     base_url = "https://archive-api.open-meteo.com/v1/archive"
     start_str = start_date.strftime('%Y-%m-%d')
     today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -234,6 +313,10 @@ def fetch_openmeteo_data(start_date, end_date, latitude, longitude, timezone):
     return pd.DataFrame()
 
 def fetch_openmeteo_forecast(latitude, longitude, timezone, start_date_forecast, end_date_forecast):
+    """
+    Fetches weather forecast data from Open-Meteo for the specified coordinates and time period.
+    Used to provide input features for future price predictions.
+    """
     base_url = "https://api.open-meteo.com/v1/forecast"
     start_str = start_date_forecast.strftime('%Y-%m-%d')
     end_str = end_date_forecast.strftime('%Y-%m-%d')
@@ -264,6 +347,10 @@ def fetch_openmeteo_forecast(latitude, longitude, timezone, start_date_forecast,
     return pd.DataFrame()
 
 def preprocess_data(df, scaler=None, fit_scaler=False):
+    """
+    Preprocesses input data by adding time-based features, scaling numerical columns, and handling missing values.
+    Returns the processed DataFrame, scaler, and metadata about scaled columns and features.
+    """
     df_processed = df.copy()
     if 'Datetime' not in df_processed.columns: raise ValueError("'Datetime' column missing.")
     df_processed['Datetime'] = pd.to_datetime(df_processed['Datetime'])
@@ -328,6 +415,10 @@ def preprocess_data(df, scaler=None, fit_scaler=False):
     return df_processed, scaler, columns_to_scale, scaled_price_col_name, scaled_feature_cols
 
 def create_sequences(data, price_col_name, feature_col_names, seq_length):
+    """
+    Creates time-series sequences for LSTM input, including price and feature data.
+    Each sequence represents a window of historical data used to predict the next price.
+    """
     X_price_list, X_features_list, y_list = [], [], []
     if price_col_name not in data.columns: raise ValueError(f"Price column '{price_col_name}' not found.")
     present_feature_cols = [col for col in feature_col_names if col in data.columns]
@@ -348,11 +439,17 @@ def create_sequences(data, price_col_name, feature_col_names, seq_length):
     return X_price, X_features, y
 
 def build_model(input_shape_price, input_shape_features):
+    """
+    Builds a dual-branch LSTM model:
+    - Price branch: Processes historical price sequences.
+    - Features branch (optional): Processes additional features like weather or time-based data.
+    The branches are merged to produce a single price prediction.
+    """
     input_price = Input(shape=input_shape_price, name='price_input')
     lstm_price_1 = LSTM(units=64, return_sequences=True, name='lstm_price_1')(input_price)
     dropout_price_1 = Dropout(0.2, name='dropout_price_1')(lstm_price_1)
     lstm_price_2 = LSTM(units=32, name='lstm_price_2')(dropout_price_1)
-    dropout_price_2 = Dropout(0.2, name='dropout_price_2')(lstm_price_2)
+    dropout  _price_2 = Dropout(0.2, name='dropout_price_2')(lstm_price_2)
     price_branch_output = dropout_price_2
     inputs = [input_price]
     features_exist = isinstance(input_shape_features, (list, tuple)) and len(input_shape_features) > 1 and input_shape_features[1] > 0
@@ -378,6 +475,10 @@ def build_model(input_shape_price, input_shape_features):
     return model
 
 def plot_predictions(true_index, true_values, predicted_values, title='Electricity Price Prediction'):
+    """
+    Plots actual vs. predicted electricity prices for historical test data.
+    Saves the plot as a PNG file for analysis.
+    """
     if len(true_index) != len(true_values) or len(true_index) != len(predicted_values): return
     plt.figure(figsize=(15, 7)); plt.plot(true_index, true_values, 'b-', label='Actual Price', alpha=0.8, linewidth=1.5)
     plt.plot(true_index, predicted_values, 'r--', label='Predicted Price', alpha=0.8, linewidth=1.2)
@@ -389,6 +490,10 @@ def plot_predictions(true_index, true_values, predicted_values, title='Electrici
     finally: plt.close()
 
 def plot_future_predictions(df_future, title='Future Electricity Price Prediction'):
+    """
+    Plots predicted electricity prices for the forecast period.
+    Saves the plot as a PNG file for visualization.
+    """
     if df_future.empty or 'PredictedPrice' not in df_future.columns or 'Datetime' not in df_future.columns: return
     plt.figure(figsize=(15, 7))
     plt.plot(df_future['Datetime'], df_future['PredictedPrice'], 'orange', marker='o', markersize=4, linestyle='-', label='Future Predicted Price')
@@ -399,8 +504,11 @@ def plot_future_predictions(df_future, title='Future Electricity Price Predictio
     except Exception as e: logging.error(f"Could not save future plot: {e}")
     finally: plt.close()
 
-
 def train_model(model, X_train_price, X_train_features, y_train, X_val_price, X_val_features, y_val, epochs=100, batch_size=32):
+    """
+    Trains the LSTM model using training and validation data.
+    Implements early stopping to prevent overfitting and logs training progress.
+    """
     train_inputs = [X_train_price]
     val_inputs = [X_val_price]
     features_exist = X_train_features is not None and X_train_features.ndim == 3 and X_train_features.shape[2] > 0
@@ -419,6 +527,10 @@ def evaluate_model(model, scaler,
                    X_test_price, X_test_features, y_test_scaled,
                    test_data_index, scaled_columns_list,
                    accuracy_tolerance_eur=15.0):
+    """
+    Evaluates the trained model on the test set, computing metrics like RMSE, MAE, R², and accuracy within a specified
+    price tolerance. Generates a plot comparing actual and predicted prices.
+    """
     test_inputs = [X_test_price]
     features_exist = X_test_features is not None and X_test_features.ndim == 3 and X_test_features.shape[2] > 0
     if features_exist:
@@ -467,6 +579,10 @@ def predict_future_prices(model,
                           price_col_name_scaled,
                           all_feature_cols,
                           scaled_cols_list):
+    """
+    Predicts future electricity prices for the specified number of hours using the trained model and forecasted weather
+    data. Iteratively updates the input sequence with new predictions and feature data.
+    """
     logging.info(f"Starting future prediction for {n_future_hours} hours...")
     if not isinstance(last_known_sequence_scaled_df, pd.DataFrame) or len(last_known_sequence_scaled_df) != sequence_length: return pd.DataFrame()
     if price_col_name_scaled not in last_known_sequence_scaled_df.columns: return pd.DataFrame()
@@ -480,7 +596,7 @@ def predict_future_prices(model,
     future_datetimes = pd.date_range(start=last_historical_dt + timedelta(hours=1), periods=n_future_hours, freq='h')
     future_df = pd.DataFrame(index=future_datetimes)
     future_df['Hour'] = future_df.index.hour; future_df['DayOfWeek'] = future_df.index.dayofweek
-    future_df['Month'] = future_df.index.month; future_df['IsWeekend'] = future_df['DayOfWeek'].isin([5, 6]).astype(int)
+    future_df['Month'] = future_df.index.month w; future_df['IsWeekend'] = future_df['DayOfWeek'].isin([5, 6]).astype(int)
 
     weather_cols_needed = [col for col in ['Temperature', 'Humidity', 'Wind Speed', 'Cloudiness'] if col in all_feature_cols]
     present_feature_cols = weather_cols_needed + [col for col in ['Hour','DayOfWeek','Month','IsWeekend'] if col in all_feature_cols]
@@ -547,6 +663,14 @@ def predict_future_prices(model,
     return df_future_predictions
 
 if __name__ == '__main__':
+    """
+    Main execution workflow:
+    1. Configures parameters (API key, country code, timezone, coordinates).
+    2. Fetches historical data in chunks to manage API limitations.
+    3. Merges and preprocesses data, splitting into train/validation/test sets.
+    4. Trains or loads an LSTM model, evaluates it, and predicts future prices.
+    5. Logs results and saves visualizations.
+    """
     API_KEY_ENTSOE = 'a5298d45-1477-4ecf-8335-dd4d99fa969f'
     MODEL_CACHE_DIR = "saved_models"
     os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
@@ -557,7 +681,7 @@ if __name__ == '__main__':
     TARGET_WEATHER_LAT = 42.6977
     TARGET_WEATHER_LON = 23.3219
 
-    if API_KEY_ENTSOE == 'YOUR_ENTSOE_API_KEY' or not API_KEY_ENTSOE: exit()
+    if API_KEY_ENTSOE == 'YOUR_ENTSOE_API_KEY' or not API_KEY_ENTSOE: exit    exit()
 
     end_date_fetch_utc = datetime.now(pytz.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     start_date_fetch_utc = end_date_fetch_utc - timedelta(days=735)
@@ -576,32 +700,7 @@ if __name__ == '__main__':
          chunk_start_dates_utc = chunk_start_dates_utc.insert(0, start_date_fetch_utc)
 
     for i, chunk_start_utc in enumerate(chunk_start_dates_utc):
-        chunk_end_utc = chunk_start_dates_utc[i+1] if i + 1 < len(chunk_start_dates_utc) else end_date_fetch_utc
-        if chunk_end_utc <= chunk_start_utc: continue
-
-        chunk_start_local_naive = chunk_start_utc.astimezone(pytz.timezone(TARGET_COUNTRY_TZ)).replace(tzinfo=None)
-        chunk_end_local_naive = chunk_end_utc.astimezone(pytz.timezone(TARGET_COUNTRY_TZ)).replace(tzinfo=None)
-
-        logging.info(f"\nFetching Chunk {i+1}/{len(chunk_start_dates_utc)}: Local {chunk_start_local_naive.date()} to {chunk_end_local_naive.date()} for {TARGET_COUNTRY_CODE}")
-
-        df_price_chunk = fetch_entsoe_prices(API_KEY_ENTSOE, chunk_start_utc, chunk_end_utc, TARGET_COUNTRY_CODE, TARGET_COUNTRY_TZ)
-        if not df_price_chunk.empty:
-            all_price_chunks.append(df_price_chunk)
-        else: logging.warning(f"No price data returned for chunk.")
-        time.sleep(0.1)
-
-        df_weather_chunk = fetch_openmeteo_data(chunk_start_local_naive, chunk_end_local_naive, TARGET_WEATHER_LAT, TARGET_WEATHER_LON, TARGET_COUNTRY_TZ)
-        if not df_weather_chunk.empty: all_weather_chunks.append(df_weather_chunk)
-        else: logging.warning(f"No historical weather data returned for chunk.")
-        time.sleep(0.1)
-
-        df_gen_chunk = fetch_entsoe_generation(API_KEY_ENTSOE, chunk_start_utc, chunk_end_utc, TARGET_COUNTRY_CODE, TARGET_COUNTRY_TZ)
-        if not df_gen_chunk.empty: all_generation_chunks.append(df_gen_chunk)
-        time.sleep(0.1)
-
-        df_load_chunk = fetch_entsoe_load(API_KEY_ENTSOE, chunk_start_utc, chunk_end_utc, TARGET_COUNTRY_CODE, TARGET_COUNTRY_TZ)
-        if not df_load_chunk.empty: all_load_chunks.append(df_load_chunk)
-        time.sleep(0.1)
+        chunk
 
     if not all_price_chunks: logging.critical("FATAL: No price data fetched."); exit()
     df_prices_full = pd.concat(all_price_chunks, ignore_index=True).drop_duplicates('Datetime').sort_values('Datetime')
@@ -613,16 +712,7 @@ if __name__ == '__main__':
         if not df_weather_full.empty:
              df_full['Datetime'] = pd.to_datetime(df_full['Datetime'])
              df_weather_full['Datetime'] = pd.to_datetime(df_weather_full['Datetime'])
-             df_full = pd.merge(df_full, df_weather_full, on='Datetime', how='left')
-             data_types_present.append('Weather'); weather_data_fetched = True
-             logging.info(f"Merged Weather. Total rows after merge: {len(df_full)}")
-    if not weather_data_fetched: logging.warning("No weather data merged.")
-    if all_generation_chunks:
-        df_gen_full = pd.concat(all_generation_chunks,ignore_index=True).drop_duplicates('Datetime').sort_values('Datetime')
-        if not df_gen_full.empty: df_full=pd.merge(df_full,df_gen_full,on='Datetime',how='left'); data_types_present.append('Gen')
-    if all_load_chunks:
-        df_load_full = pd.concat(all_load_chunks,ignore_index=True).drop_duplicates('Datetime').sort_values('Datetime')
-        if not df_load_full.empty: df_full=pd.merge(df_full,df_load_full,on='Datetime',how='left'); data_types_present.append('Load')
+             df_full = pd.merge(df_full,ედ
 
     if df_full.empty or 'Price' not in df_full.columns or df_full['Price'].isnull().all(): exit()
     if 'Datetime' not in df_full.columns: exit()
@@ -760,7 +850,7 @@ if __name__ == '__main__':
                          last_known_sequence_scaled_df=last_historical_scaled_df,
                          weather_forecast_df=df_weather_forecast_filtered,
                          n_future_hours=N_FUTURE_HOURS,
-                         sequence_length=sequence_length,
+                         sequence_length = sequence_length,
                          price_col_name_scaled=scaled_price_col_name,
                          all_feature_cols=present_feature_cols,
                          scaled_cols_list=scaled_cols_list
